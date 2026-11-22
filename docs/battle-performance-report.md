@@ -132,7 +132,7 @@ Headless, deterministic counts per turn (`pnpm profile:battle`, 5 runs, relMAD �
 | … simulated (AI / previews) | 66 | 3,034 | 3,752 |
 | Modifier apply calls → triggered | 74 → 0 | 673 → 44 | 898 → 70 |
 | Modifier list entries scanned | 0 | 19,140 | 25,531 |
-| Sync CPU [M] | see benchmark | 45 ms | 88 ms |
+| Sync CPU, headless [M] | 5.1 ms | 43 ms | 93 ms |
 
 A V8 CPU profile of simulated damage calculations, about 330 µs each in late game, is dominated by ability plumbing:
 `applySingleAbAttrs`, `getAbility` / `getPassiveAbility`, `canApplyAbility`, `hasPassive` and `Ability.getAttrs`, which
@@ -193,6 +193,7 @@ measured per-phase costs; each should be verified with the profiler before and a
 ## Profiler overhead
 
 Interleaved A/B on the most heavily instrumented path (simulated damage calculations), 7 batches × 2,000 calls:
-**+15%** (330 → 380 µs per call; relMAD 1–6%). This is a worst case: whole turns contain uninstrumented work, and
-browser `performance.now()` is cheaper than jsdom's. When disabled, each instrumentation site is a constant-false
+**+4% to +15%** across two benchmark runs (330 → 344 µs and 329 → 380 µs per call; per-run relMAD 1–6%). The
+spread between runs is as large as the effect, so treat it as "low tens of percent at worst". This path is a worst
+case: whole turns contain uninstrumented work, and browser `performance.now()` is cheaper than jsdom's. When disabled, each instrumentation site is a constant-false
 check, and production builds cannot enable the profiler.
