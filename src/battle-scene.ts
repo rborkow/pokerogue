@@ -20,6 +20,7 @@ import { LoadingScene } from "#app/loading-scene";
 import { activeOverrides } from "#app/overrides";
 import type { Phase } from "#app/phase";
 import { PhaseManager } from "#app/phase-manager";
+import { battleProfiler, PROFILING_SUPPORTED, type ProfileStat } from "#app/profiling/battle-profiler";
 import { FieldSpriteBatchHandler, FieldSpriteSubmitter } from "#app/render-nodes/field-sprite";
 import { SpriteBatchHandler, SpriteSubmitter } from "#app/render-nodes/sprite";
 import { SceneBase } from "#app/scene-base";
@@ -396,6 +397,12 @@ export class BattleScene extends SceneBase {
   public create(): void {
     this.scene.remove(LoadingScene.KEY);
     initGameSpeed(this);
+    // Dev-only profiler console (`window.pokerogueProfiler`); stripped from production builds.
+    // Installed after `initGameSpeed` so its timer/tween hooks observe post-game-speed durations.
+    // The env check is inlined (rather than using `PROFILING_SUPPORTED`) so the bundler can drop the chunk.
+    if (import.meta.env.MODE !== "production" && import.meta.env.MODE !== "test") {
+      void import("#app/profiling/profiler-console").then(m => m.installProfilerConsole(this));
+    }
     this.inputController = new InputsController();
     this.uiInputs = new UiInputs(this.inputController);
 
@@ -2848,7 +2855,11 @@ export class BattleScene extends SceneBase {
    * @returns the list of all modifiers that matched `modifierType`.
    */
   getModifiers<T extends PersistentModifier>(modifierType: Constructor<T>, player = true): T[] {
-    return (player ? this.modifiers : this.enemyModifiers).filter((m): m is T => m instanceof modifierType);
+    const list = player ? this.modifiers : this.enemyModifiers;
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.countModifierLookup(modifierType.name, list.length);
+    }
+    return list.filter((m): m is T => m instanceof modifierType);
   }
 
   /**
@@ -2858,7 +2869,11 @@ export class BattleScene extends SceneBase {
    * @returns the list of all modifiers that passed the `modifierFilter` function
    */
   findModifiers(modifierFilter: ModifierPredicate, isPlayer = true): PersistentModifier[] {
-    return (isPlayer ? this.modifiers : this.enemyModifiers).filter(modifierFilter);
+    const list = isPlayer ? this.modifiers : this.enemyModifiers;
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.countModifierLookup("findModifiers", list.length);
+    }
+    return list.filter(modifierFilter);
   }
 
   /**
@@ -2868,7 +2883,12 @@ export class BattleScene extends SceneBase {
    * @returns the first modifier that passed the `modifierFilter` function; `undefined` if none passed
    */
   findModifier(modifierFilter: ModifierPredicate, player = true): PersistentModifier | undefined {
-    return (player ? this.modifiers : this.enemyModifiers).find(modifierFilter);
+    const list = player ? this.modifiers : this.enemyModifiers;
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      // Upper bound: `find` may exit early.
+      battleProfiler.countModifierLookup("findModifier", list.length);
+    }
+    return list.find(modifierFilter);
   }
 
   /**
@@ -2883,9 +2903,31 @@ export class BattleScene extends SceneBase {
     player = true,
     ...args: Parameters<T["apply"]>
   ): T[] {
-    let modifiers = (player ? this.modifiers : this.enemyModifiers).filter(
-      (m): m is T => m instanceof modifierType && m.shouldApply(...args),
-    );
+    const list = player ? this.modifiers : this.enemyModifiers;
+    const profStat =
+      PROFILING_SUPPORTED && battleProfiler.enabled
+        ? battleProfiler.beginModifier(modifierType.name, list.length)
+        : undefined;
+    try {
+      return this.applyShuffledModifiersImpl(list, modifierType, player, args, profStat);
+    } finally {
+      if (profStat !== undefined) {
+        battleProfiler.end();
+      }
+    }
+  }
+
+  private applyShuffledModifiersImpl<T extends PersistentModifier>(
+    list: readonly PersistentModifier[],
+    modifierType: Constructor<T>,
+    player: boolean,
+    args: Parameters<T["apply"]>,
+    profStat: ProfileStat | undefined,
+  ): T[] {
+    let modifiers = list.filter((m): m is T => m instanceof modifierType && m.shouldApply(...args));
+    if (profStat !== undefined) {
+      profStat.b += modifiers.length;
+    }
     this.executeWithSeedOffset(
       () => {
         const shuffleModifiers = mods => {
@@ -2900,7 +2942,11 @@ export class BattleScene extends SceneBase {
       this.currentBattle.turn << 4,
       this.waveSeed,
     );
-    return this.applyModifiersInternal(modifiers, player, args);
+    const applied = this.applyModifiersInternal(modifiers, player, args);
+    if (profStat !== undefined) {
+      profStat.c += applied.length;
+    }
+    return applied;
   }
 
   /**
@@ -2915,10 +2961,21 @@ export class BattleScene extends SceneBase {
     player = true,
     ...args: Parameters<T["apply"]>
   ): T[] {
-    const modifiers = (player ? this.modifiers : this.enemyModifiers).filter(
-      (m): m is T => m instanceof modifierType && m.shouldApply(...args),
-    );
-    return this.applyModifiersInternal(modifiers, player, args);
+    const list = player ? this.modifiers : this.enemyModifiers;
+    if (!(PROFILING_SUPPORTED && battleProfiler.enabled)) {
+      const modifiers = list.filter((m): m is T => m instanceof modifierType && m.shouldApply(...args));
+      return this.applyModifiersInternal(modifiers, player, args);
+    }
+    const profStat = battleProfiler.beginModifier(modifierType.name, list.length);
+    try {
+      const modifiers = list.filter((m): m is T => m instanceof modifierType && m.shouldApply(...args));
+      profStat.b += modifiers.length;
+      const applied = this.applyModifiersInternal(modifiers, player, args);
+      profStat.c += applied.length;
+      return applied;
+    } finally {
+      battleProfiler.end();
+    }
   }
 
   /** Helper function to apply all passed modifiers */
@@ -2950,17 +3007,32 @@ export class BattleScene extends SceneBase {
     player = true,
     ...args: Parameters<T["apply"]>
   ): T | null {
-    const modifiers = (player ? this.modifiers : this.enemyModifiers).filter(
-      (m): m is T => m instanceof modifierType && m.shouldApply(...args),
-    );
-    for (const modifier of modifiers) {
-      if (modifier.apply(...args)) {
-        console.log("Applied", modifier.type.name, player ? "" : "(enemy)");
-        return modifier;
+    const list = player ? this.modifiers : this.enemyModifiers;
+    const profStat =
+      PROFILING_SUPPORTED && battleProfiler.enabled
+        ? battleProfiler.beginModifier(modifierType.name, list.length)
+        : undefined;
+    try {
+      const modifiers = list.filter((m): m is T => m instanceof modifierType && m.shouldApply(...args));
+      if (profStat !== undefined) {
+        profStat.b += modifiers.length;
+      }
+      for (const modifier of modifiers) {
+        if (modifier.apply(...args)) {
+          console.log("Applied", modifier.type.name, player ? "" : "(enemy)");
+          if (profStat !== undefined) {
+            profStat.c++;
+          }
+          return modifier;
+        }
+      }
+
+      return null;
+    } finally {
+      if (profStat !== undefined) {
+        battleProfiler.end();
       }
     }
-
-    return null;
   }
 
   triggerPokemonFormChange(

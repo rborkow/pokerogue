@@ -2,6 +2,7 @@ import type { PostMoveInteractionAbAttrParams, PostMoveUsedAbAttrParams } from "
 import { applyAbAttrs } from "#abilities/apply-ab-attrs";
 import { globalScene } from "#app/global-scene";
 import { getPokemonNameWithAffix } from "#app/messages";
+import { battleProfiler, PROFILING_SUPPORTED } from "#app/profiling/battle-profiler";
 import { ConditionalProtectTag } from "#data/arena-tag";
 import { MoveAnim } from "#data/battle-anims";
 import { ProtectedTag, SemiInvulnerableTag, SubstituteTag, TypeBoostTag } from "#data/battler-tags";
@@ -608,6 +609,9 @@ export class MoveEffectPhase extends PokemonPhase {
       return [HitResult.STATUS, 0, false];
     }
 
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.countHit();
+    }
     const result = this.applyMoveDamage(user, target, effectiveness);
 
     if (user.turnData.hitsLeft === 1 || target.isFainted()) {

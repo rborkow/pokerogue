@@ -15,6 +15,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:profile": "vite-node scripts/profiling/profiling.ts",
+    "profile:battle": "vitest run --config test/profiling/profiling.config.ts test/profiling/benchmark.profile.ts",
+    "profile:replay": "vitest run --config test/profiling/profiling.config.ts test/profiling/replay-capture.profile.ts",
     "test:cov": "vitest run --silent='passed-only' --coverage",
     "test:watch": "vitest watch --silent='passed-only'",
     "test:silent": "vitest run --silent='passed-only'",
