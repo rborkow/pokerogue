@@ -1,0 +1,20 @@
+diff --git a/src/phases/show-ability-phase.ts b/src/phases/show-ability-phase.ts
+index 31a0ee7..af541ed 100644
+--- a/src/phases/show-ability-phase.ts
++++ b/src/phases/show-ability-phase.ts
+@@ -49,10 +49,10 @@ export class ShowAbilityPhase extends PokemonPhase {
+       globalScene.currentBattle.lastEnemyInvolved = pokemon.getBattlerIndex() % 2;
+     }
+ 
+-    globalScene.abilityBar.showAbility(this.pokemonName, this.abilityName, this.passive, this.player).then(() => {
+-      pokemon.revealAbility();
+-
+-      this.end();
+-    });
++    // EXPERIMENT E2: start the fly-in but do not block the battle on its tween/hold;
++    // the bar stays visible while the ability's message displays and HideAbilityPhase hides it.
++    void globalScene.abilityBar.showAbility(this.pokemonName, this.abilityName, this.passive, this.player);
++    pokemon.revealAbility();
++    this.end();
+   }
+ }
