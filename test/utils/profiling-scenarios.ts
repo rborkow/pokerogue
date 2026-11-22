@@ -93,9 +93,10 @@ const LATE_MODIFIERS: ModifierOverride[] = [
 export const SCENARIOS: Readonly<Record<ScenarioId, ScenarioDefinition>> = {
   "A-early": {
     id: "A-early",
-    description: "Classic wave 5, single battle, Snorlax mirror at level 40, no held items or modifiers, no passives",
+    description:
+      "Classic wave 3, single wild battle, Snorlax mirror at level 40, no held items or modifiers, no passives",
     mode: GameModes.CLASSIC,
-    wave: 5,
+    wave: 3, // Not 5: Classic wave 5 is a fixed trainer battle
     double: false,
     playerSpecies: [SpeciesId.SNORLAX],
     playerMoves: [MoveId.TACKLE],

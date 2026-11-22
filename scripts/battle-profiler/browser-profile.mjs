@@ -26,9 +26,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const { values: args } = parseArgs({
+  strict: false,
   options: {
     url: { type: "string", default: "http://localhost:8000" },
     runs: { type: "string", default: "3" },
@@ -37,6 +39,15 @@ const { values: args } = parseArgs({
     configs: { type: "string", default: "turbo,max" },
     out: { type: "string", default: join("temp", "profiles", "browser") },
     headed: { type: "boolean", default: false },
+    /** Seconds to wait for the first command prompt before giving up on a run. */
+    "start-timeout": { type: "string", default: "120" },
+    /**
+     * Skip drawing (renderer pre-render/render/post-render become no-ops) while game logic, timers and tweens
+     * run normally. Approximates presentation pacing on a fast GPU; use on GPU-less machines.
+     */
+    "no-render": { type: "boolean", default: false },
+    /** Keep console.log/debug (dev-like). By default they are silenced because production builds strip them. */
+    "keep-console": { type: "boolean", default: false },
   },
 });
 
@@ -75,12 +86,12 @@ const LATE_MODS = [
 ].map(([name, count]) => ({ name, count }));
 
 /** Scenario definitions, mirroring test/utils/profiling-scenarios.ts. Enum values are given by name. */
-const SCENARIOS = {
+export const SCENARIOS = {
   "A-early": {
     mode: "CLASSIC",
     party: ["SNORLAX"],
     overrides: {
-      STARTING_WAVE_OVERRIDE: 5,
+      STARTING_WAVE_OVERRIDE: 3, // Classic wave 5 is a fixed trainer battle
       STARTING_BIOME_OVERRIDE: "biome:TOWN",
       FIELD_SIZE_OVERRIDE: "single",
       MOVESET_OVERRIDE: ["move:TACKLE"],
@@ -145,7 +156,9 @@ const SCENARIOS = {
   },
 };
 
-const COMMON_OVERRIDES = {
+export const COMMON_OVERRIDES = {
+  // Force wild battles: scripted trainer waves would otherwise open dialogue that waits for input.
+  BATTLE_TYPE_OVERRIDE: "battleType:WILD",
   DISABLE_STANDARD_TRAINERS_OVERRIDE: true,
   MYSTERY_ENCOUNTER_RATE_OVERRIDE: 0,
   CRITICAL_HIT_OVERRIDE: false,
@@ -154,7 +167,7 @@ const COMMON_OVERRIDES = {
 };
 
 /** Settings applied per configuration (values are enum numbers; see src/enums). */
-const CONFIGS = {
+export const CONFIGS = {
   /** Maximum game speed, everything else default. */
   turbo: { general: { gameSpeed: 5 }, display: {} },
   /** Maximum game speed plus every animation acceleration the settings offer. */
@@ -165,7 +178,7 @@ const CONFIGS = {
 };
 
 /** Runs in the page: wait for the title screen, configure, start the battle. */
-async function setupInPage({ scenario, config }) {
+export async function setupInPage({ scenario, config, noRender, keepConsole }) {
   const imp = p => import(/* @vite-ignore */ p);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const { globalScene } = await imp("/src/globals/global-scene.ts");
@@ -181,6 +194,7 @@ async function setupInPage({ scenario, config }) {
     ability: (await imp("/src/enums/ability-id.ts")).AbilityId,
     nature: (await imp("/src/enums/nature.ts")).Nature,
     biome: (await imp("/src/enums/biome-id.ts")).BiomeId,
+    battleType: (await imp("/src/enums/battle-type.ts")).BattleType,
   };
   const { GameModes } = await imp("/src/enums/game-modes.ts");
   const { BattleStyle } = await imp("/src/enums/battle-style.ts");
@@ -211,7 +225,19 @@ async function setupInPage({ scenario, config }) {
     await sleep(250);
   }
 
+  if (!keepConsole) {
+    console.log = () => {};
+    console.debug = () => {};
+  }
+  if (noRender) {
+    const renderer = globalScene.game.renderer;
+    renderer.preRender = () => {};
+    renderer.render = () => {};
+    renderer.postRender = () => {};
+  }
   settings.update("general", "battleStyle", BattleStyle.SET);
+  // Encounter dialogue happens before the profiled turns; skip it as the test harness does.
+  globalScene.ui.shouldSkipDialogue = () => true;
   for (const [cat, entries] of Object.entries(config)) {
     for (const [key, value] of Object.entries(entries)) {
       settings.update(cat, key, value);
@@ -245,7 +271,7 @@ async function setupInPage({ scenario, config }) {
 }
 
 /** Runs in the page: profile `turns` turns, issuing commands only when the game waits for input. */
-async function playTurnsInPage({ turns, label }) {
+export async function playTurnsInPage({ turns, label, waitForCommandTicks }) {
   const imp = p => import(/* @vite-ignore */ p);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const { globalScene } = await imp("/src/globals/global-scene.ts");
@@ -267,12 +293,18 @@ async function playTurnsInPage({ turns, label }) {
       timeline.push({ t: Math.round(performance.now() - t0), state: entry });
     }
   };
-  for (let i = 0; i < 2400 && !(now() === "CommandPhase" && globalScene.ui.mode === UiMode.COMMAND); i++) {
+  for (
+    let i = 0;
+    i < waitForCommandTicks && !(now() === "CommandPhase" && globalScene.ui.mode === UiMode.COMMAND);
+    i++
+  ) {
     note();
     await sleep(50);
   }
   api.start({ traceDetail: "phases" });
-  const deadline = performance.now() + 240_000 * turns;
+  const reachedCommand = now() === "CommandPhase" && globalScene.ui.mode === UiMode.COMMAND;
+  // Give up immediately if the battle never asked for a command (see the timeline for where it stalled).
+  const deadline = reachedCommand ? performance.now() + 240_000 * turns : performance.now();
   while (battleProfiler.turns.length < turns && performance.now() < deadline) {
     note();
     const name = now();
@@ -324,6 +356,19 @@ async function main() {
         const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
         const page = await context.newPage();
         page.on("pageerror", e => console.warn(`[${label}] page error: ${e.message.slice(0, 160)}`));
+        page.on("console", m => {
+          if (m.type() === "error") {
+            console.warn(`[${label}] console error: ${m.text().slice(0, 160)}`);
+          }
+        });
+        page.on("requestfailed", r =>
+          console.warn(`[${label}] request failed: ${r.url()} (${r.failure()?.errorText})`),
+        );
+        page.on("response", r => {
+          if (r.status() >= 400) {
+            console.warn(`[${label}] HTTP ${r.status()}: ${r.url()}`);
+          }
+        });
         const t0 = Date.now();
         await page.goto(args.url, { timeout: 600_000 });
         await page.waitForFunction(() => !!window.pokerogueProfiler, null, { timeout: 600_000 });
@@ -332,9 +377,18 @@ async function main() {
           overrides: { ...COMMON_OVERRIDES, ...SCENARIOS[scenarioId].overrides },
         };
         console.info(`[${label}] game loaded after ${((Date.now() - t0) / 1000).toFixed(0)} s; starting battle`);
-        await page.evaluate(setupInPage, { scenario, config: CONFIGS[configId] });
+        await page.evaluate(setupInPage, {
+          scenario,
+          config: CONFIGS[configId],
+          noRender: args["no-render"],
+          keepConsole: args["keep-console"],
+        });
         console.info(`[${label}] battle started after ${((Date.now() - t0) / 1000).toFixed(0)} s; profiling turns`);
-        const out = await page.evaluate(playTurnsInPage, { turns: Number(args.turns), label });
+        const out = await page.evaluate(playTurnsInPage, {
+          turns: Number(args.turns),
+          label,
+          waitForCommandTicks: Number(args["start-timeout"]) * 20,
+        });
         const base = join(args.out, `${scenarioId}.${configId}.run${run}`);
         writeFileSync(`${base}.summary.json`, JSON.stringify(out.summary, null, 2));
         writeFileSync(`${base}.trace.json`, JSON.stringify(out.trace));
@@ -357,4 +411,6 @@ async function main() {
   console.info(`Wrote ${results.length} runs to ${args.out}`);
 }
 
-await main();
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  await main();
+}

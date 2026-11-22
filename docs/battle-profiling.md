@@ -130,7 +130,7 @@ PROFILE_RUNS=10 PROFILE_TURNS=5 PROFILE_SCENARIOS=B-late-endless pnpm profile:ba
 
 Scenarios (defined in `test/utils/profiling-scenarios.ts`, constructed with overrides, **not** recordings):
 
-- **A-early**: Classic wave 5, single battle, no items or passives.
+- **A-early**: Classic wave 3, single wild battle, no items or passives.
 - **B-late-endless**: Endless wave 1005, double battle, 14 held-item types per Pokémon, 15 party modifiers, passives.
 - **C-pathological**: B's loadout with Population Bomb + Skill Link into enemies with Stamina and Weak Armor, so
   every strike triggers abilities, stat changes and messages.

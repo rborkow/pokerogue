@@ -64,7 +64,12 @@ export interface TurnBreakdown {
   frameWorkMs: number | null;
   /** Derived (browser only): frame work not attributed to instrumented code (rendering, tween updates, etc.). */
   engineAndRenderMs: number | null;
-  /** Derived (browser only): time the main thread spent outside frames and instrumented code (waiting on timers/tweens/vsync). */
+  /**
+   * Derived (browser only): main-thread time outside frame steps that long-task entries show was busy
+   * (typically GPU presentation/compositing, or other tasks). `null` when no frames were observed.
+   */
+  blockedOutsideFramesMs: number | null;
+  /** Derived (browser only): time the main thread spent outside frames, instrumented code and long tasks (waiting on timers/tweens/vsync). */
   idleWaitMs: number | null;
   /** Derived: wall time not covered by any of the above buckets. In headless runs this is the harness's own overhead. */
   unattributedMs: number;
@@ -191,8 +196,12 @@ export function computeBreakdown(wallMs: number, c: Counters, stats: StatDelta[]
   const syncOutsideFrames = Math.max(0, c.syncMs - c.syncInFramesMs);
   const frameWork = hasFrames ? c.frameWorkMs : null;
   const engine = hasFrames ? Math.max(0, c.frameWorkMs - c.syncInFramesMs) : null;
-  const idle = hasFrames ? Math.max(0, wallMs - c.frameWorkMs - syncOutsideFrames) : null;
-  const covered = c.syncMs + (engine ?? 0) + (idle ?? 0);
+  const rawIdle = hasFrames ? Math.max(0, wallMs - c.frameWorkMs - syncOutsideFrames) : null;
+  // Long-task entries cover whole tasks (including the frame step); the remainder is busy time outside the step.
+  const blocked =
+    rawIdle === null ? null : Math.min(rawIdle, Math.max(0, c.longTaskMs - c.frameWorkMs - syncOutsideFrames));
+  const idle = rawIdle === null ? null : rawIdle - (blocked ?? 0);
+  const covered = c.syncMs + (engine ?? 0) + (blocked ?? 0) + (idle ?? 0);
   return {
     wallMs: round(wallMs),
     syncWorkMs: round(c.syncMs),
@@ -200,6 +209,7 @@ export function computeBreakdown(wallMs: number, c: Counters, stats: StatDelta[]
     otherPhaseCodeMs: round(Math.max(0, c.syncMs - effect)),
     frameWorkMs: frameWork === null ? null : round(frameWork),
     engineAndRenderMs: engine === null ? null : round(engine),
+    blockedOutsideFramesMs: blocked === null ? null : round(blocked),
     idleWaitMs: idle === null ? null : round(idle),
     unattributedMs: round(Math.max(0, wallMs - covered)),
     declaredWaitMs: round(c.declaredWaitMs),
@@ -418,6 +428,7 @@ export function formatProfileReport(summary: ProfileSummary, maxTurns = 50): str
     lines.push(
       `   engine/render         [D] ${ms(b.engineAndRenderMs)}   (frame work [M] ${ms(b.frameWorkMs)}, ${c.frames} frames)`,
     );
+    lines.push(`   blocked outside frame [D] ${ms(b.blockedOutsideFramesMs)}   (long tasks; e.g. GPU presentation)`);
     lines.push(`   idle / waiting        [D] ${ms(b.idleWaitMs)}`);
     lines.push(`   unattributed          [D] ${ms(b.unattributedMs)}`);
     lines.push(
