@@ -11,7 +11,8 @@ rendering cost, about 95% of a late-Endless turn is spent idle while serialized 
 Effect evaluation (abilities, items, damage) accounts for under 0.2%. Turn time is almost exactly proportional
 to the number of phases the turn queues (r = 0.997), at about 250 ms per phase transition at Turbo speed.
 Late-game effects multiply those phases, especially messages and ability flyouts, which no acceleration
-setting shortens.
+setting shortens. Prototyping the two main fixes (faster messages and a non-blocking ability flyout) cut wall time
+per phase by 44–66% in late-game scenarios without changing battle outcomes.
 
 How these numbers were produced, and how to reproduce them, is in [`battle-profiling.md`](./battle-profiling.md).
 
@@ -119,8 +120,11 @@ serialized phases (flyout, message, stat change) → each phase waits a fixed pr
 *evaluation* work (19,000 modifier entries scanned per turn in B, against 0 in A) but not the waits, unless an effect
 actually triggers.
 
-Frame alignment adds a measurable tax: completed waits overshot their declared duration by about one frame each
-(B turbo: ~1.3 s per turn over 118 waits; C turbo: ~3.8 s over 350). Serialized waits each round up to the next frame.
+Completed waits also overshoot their declared duration by about two-thirds of a frame each (B turbo: ~1.3 s per
+turn over 118 waits; C turbo: ~3.8 s over 350). This is frame quantization: a timer or tween can only finish on a
+frame boundary. Phaser does insert new timers at the next frame, but the first update then credits a whole frame's
+delta, which compensates. So the overshoot cannot be removed by chaining phases differently. It only shrinks when
+there are fewer serialized waits.
 
 ## Repeated work exists, but it is not why turns are slow
 
@@ -159,22 +163,78 @@ milliseconds per turn against seconds of waiting.
 6. **Evidence that Rust/WASM would help?** None. The code Rust could accelerate is 2–3% of turn time; even an
    infinitely fast simulation would leave over 97% of a late turn in place. A rewrite's cost and regression risk are
    not justified by these measurements.
-7. **What to test first?** Below.
+7. **What to test first?** The non-blocking ability flyout and faster messages; prototypes cut late-game time per phase by 44–66% (see below).
+
+## Prototyped fixes and their measured impact
+
+Each candidate fix was prototyped as a patch (in [`experiments/`](./experiments/)), measured with the same browser
+setup, and then reverted, so the code under review is unchanged. All five patches leave battle state and RNG
+**identical** to the baseline over three turns of scenarios B and C (`test/profiling/checkpoints.profile.ts`
+compares checkpoint hashes). They change pacing, not outcomes.
+
+| Patch | Change |
+|---|---|
+| **E1** faster messages | Default message hold 1,500 → 500 ms and typing 20 → 10 ms per character (both still divided by game speed) |
+| **E2** non-blocking ability flyout | `ShowAbilityPhase` starts the fly-in tween and ends at once; the bar stays visible while the message shows, and `HideAbilityPhase` hides it |
+| **E3** coalesced message runs | A message whose next queued phase is also a message gets a 500 ms hold instead of 1,500 ms |
+| **E1+E2+E3** combined | All three, with holds of 500 ms (last message of a run) and 250 ms (followed by another message) |
+| **E6** cached ability attributes | `Ability.getAttrs(type)` caches its filtered array per type instead of filtering on every call |
+
+Browser runs (rendering disabled, as above) used a fresh dev server per patch and a baseline rerun under identical
+conditions: B with 3 runs × 3 turns, C with 2 runs × 2 turns, at both Turbo and max acceleration. Because browser
+battles differ between page loads, the comparison metric is **wall time per phase transition**, which the
+baseline showed to be nearly constant within a configuration. Median turn times are shown for context.
+
+| ms per phase transition (change vs. baseline) | E1 | E2 | E3 | **Combined** |
+|---|---:|---:|---:|---:|
+| B late Endless, Turbo (baseline 186) | 127 (−32%) | 164 (−12%) | 192 (+3%) | **104 (−44%)** |
+| B late Endless, max (baseline 151) | 89 (−41%) | 125 (−17%) | 148 (−2%) | **64 (−58%)** |
+| C pathological, Turbo (baseline 219) | 185 (−16%) | 178 (−18%) | 221 (+1%) | **121 (−45%)** |
+| C pathological, max (baseline 174) | 105 (−40%) | 121 (−30%) | 165 (−5%) | **60 (−66%)** |
+
+| Median turn time | Baseline | Combined |
+|---|---:|---:|
+| A early, Turbo / max | 0.84 s / 0.50 s | 0.74 s / 0.40 s |
+| B late Endless, Turbo / max | 13.0 s / 11.3 s | 6.9 s / 4.3 s |
+| C pathological, Turbo / max | ~32–48 s / 36.8 s | 17.3 s / 7.7 s |
+
+C's turn times vary with how many strikes land, so use its per-phase figures.
+
+What each result shows:
+
+- **E1 works as predicted.** Message cost fell from ~435 ms to 196 ms. The effect is largest with max acceleration,
+  where messages are a larger share of what is left.
+- **E2 removes the flyout's blocking time entirely** (316 ms → 0 per activation) without changing message time.
+  It matters most where activations are dense (C max: −30%).
+- **E3 did nothing.** Message cost was unchanged (431–449 ms). Effect messages are almost never directly followed
+  by another message: each is bracketed by its own flyout or stat-change phase, so the coalescing condition rarely
+  held. Batching only pays off if the flyout and stat-change phases around each message are merged as well.
+- **The effects compound.** Combined, late-Endless turns with every acceleration take 4.3 s instead of 11.3 s, and
+  early turns get slightly faster rather than slower.
+- **E6 helps simulation slightly, as the profile predicted.** Headless sync CPU per turn fell 6% in B
+  (40.4 → 38.1 ms) and 7% in C (87.9 → 82.0 ms), 3 runs each; per simulated damage calculation the change was −1%,
+  within noise. Against browser turns of 10–48 s, that is a few milliseconds, well under 1% of turn time.
+
+What was **not** checked: whether messages remain readable at these speeds, and how the overlapping flyout looks.
+Both are design decisions, not performance questions, and need a visual review. E1 at Turbo leaves about 100 ms of
+hold after typing finishes, which is probably too fast to read as a default but plausible as an opt-in setting.
 
 ## Recommendations, ranked
 
-Ranked by expected benefit relative to effort and regression risk. Benefits are **estimates** derived from the
-measured per-phase costs; each should be verified with the profiler before and after.
+Ranked using the measured results above.
 
-| # | Change to test | Expected benefit (late game) | Effort | Regression risk |
+| # | Change | Measured benefit | Effort | Regression risk |
 |---|---|---|---|---|
-| 1 | **Shorten or batch effect messages at high speed.** E.g. a "fast battle messages" setting that scales message hold and typing beyond `gameSpeed`, or merging consecutive item/ability trigger messages into one. | Messages are 63–79% of B. Halving per-message time saves ~4 s of a 13 s Turbo turn (est.). | Low–medium | Low (presentation only; message *content and order* unchanged) |
-| 2 | **Stop serializing ability flyouts.** Keep the bar visible across consecutive activations by the same Pokémon, and let the flyout overlap its message rather than run as separate Show/Hide phases. | 17–36% of late turns; ~370 ms per activation. | Medium | Low–medium (UI timing; tests that count phases) |
-| 3 | **Aggregate per-strike feedback in multi-hit turns.** One "Sp. Def rose sharply ×N" message instead of one stat-change phase and message per strike. | Most of C's stat-change and per-strike message time (est. 10–20 s of a 48 s turn). | Medium | Medium (message text and order change for multi-hit moves) |
-| 4 | **Remove the per-wait frame tax.** Phaser only inserts a new timer at the next frame's pre-update, so each serialized wait rounds up to a frame boundary. Chaining the next phase directly when a wait ends (where ordering allows) avoids the extra frame. | ~1 frame per serialized wait: ~1–4 s per late turn (measured overshoot). | Low–medium | Low |
-| 5 | **Measure rendering on real GPUs** with `browser-profile.mjs` without `--no-render`, and on a captured real late-Endless save. | Closes the remaining unknown before optimizing rendering. | Low | None |
-| 6 | **Cheap simulation fixes.** Cache `Ability.getAttrs(type)` results, skip passive lookups when there is no passive, and index modifiers by constructor. | 10–20 ms per late turn in the browser; worthwhile for AI previews, not for perceived speed. | Low | Low–medium (cache invalidation on form/ability changes) |
+| 1 | **Non-blocking ability flyout** (E2): let the bar fly in alongside the message instead of as its own blocking phase. | −12% to −30% per phase; no change to message text. | Low (a few lines in `ShowAbilityPhase`) | Low (presentation only; checkpoint-identical) |
+| 2 | **Faster battle messages as an opt-in setting** (E1): a message speed option that shortens hold and typing beyond `gameSpeed`. | −16% to −41% per phase; −55% per message. | Low–medium (setting plus `MessagePhase`) | Low as opt-in; readability needs design review |
+| 3 | **Ship 1 and 2 together.** | −44% to −66% per phase; late Endless at max acceleration 11.3 s → 4.3 s per turn. | Sum of the above | As above |
+| 4 | **Merge per-effect phase groups**, not just consecutive messages: one combined flyout + message for an activation, and one aggregated stat-change message per multi-hit move. | Not measured. E3 shows that naive coalescing does nothing; gains require restructuring how effects queue phases. | Medium–high | Medium (message text and order change) |
+| 5 | **Measure rendering on real GPUs** with `browser-profile.mjs` without `--no-render`, and on a captured real late-Endless save. | Closes the remaining unknown. | Low | None |
+| 6 | **Simulation fixes** such as E6. | E6: −6% to −7% of headless sync CPU, under 1% of turn time. Worth doing for code health, not perceived speed. | Low | Low–medium (cache invalidation) |
 | 7 | Off-main-thread simulation or Rust/WASM. | ≤ 3% of turn time. | Very high | High |
+
+Dropped from the earlier list: "remove the per-wait frame tax". Investigating the mechanism showed the overshoot is
+frame quantization, not an insertion delay that chaining could avoid (see the scaling section).
 
 **Not recommended** without new evidence: rewriting the battle engine, a worker-based simulation, or Rust/WASM.
 
