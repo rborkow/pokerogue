@@ -1,8 +1,10 @@
 /*
  * Module holding functions to apply move attributes.
- * Must not import anything that is not a type.
+ * Must not import anything that is not a type
+ * (the dependency-free profiler module is the sole exception).
  */
 
+import { battleProfiler, PROFILING_SUPPORTED } from "#app/profiling/battle-profiler";
 import type { Pokemon } from "#field/pokemon";
 import type { Move, MoveAttr } from "#moves/move";
 import type { ChargingMove, MoveAttrFilter, MoveAttrString } from "#types/move-types";
@@ -34,7 +36,18 @@ export function applyMoveAttrs(
   move: Move,
   ...args: any[]
 ): void {
-  applyMoveAttrsInternal((attr: MoveAttr) => attr.is(attrType), user, target, move, args);
+  if (!(PROFILING_SUPPORTED && battleProfiler.enabled)) {
+    applyMoveAttrsInternal((attr: MoveAttr) => attr.is(attrType), user, target, move, args);
+    return;
+  }
+  const profStat = battleProfiler.stat("moveAttr", attrType);
+  profStat.a += move.attrs.length;
+  battleProfiler.begin(profStat);
+  try {
+    applyMoveAttrsInternal((attr: MoveAttr) => attr.is(attrType), user, target, move, args);
+  } finally {
+    battleProfiler.end();
+  }
 }
 
 export function applyFilteredMoveAttrs(

@@ -1,0 +1,45 @@
+diff --git a/src/data/abilities/ability.ts b/src/data/abilities/ability.ts
+index 4b2e5fe..a45e502 100644
+--- a/src/data/abilities/ability.ts
++++ b/src/data/abilities/ability.ts
+@@ -161,25 +161,31 @@ export class Ability {
+    * @returns true if the ability has attribute `attrType`
+    */
+   hasAttr<T extends AbAttrString>(attrType: T): boolean {
+-    const targetAttr = AbilityAttrs[attrType];
+-    if (!targetAttr) {
+-      return false;
+-    }
+-    return this.attrs.some(attr => attr instanceof targetAttr);
++    return this.getAttrs(attrType).length > 0;
+   }
+ 
++  /** EXPERIMENT E6: per-type cache of filtered attributes; invalidated if the attribute list grows. */
++  private readonly attrCache = new Map<AbAttrString, readonly AbAttr[]>();
++  private attrCacheSize = -1;
++
+   /**
+    * Get all ability attributes that match `attrType`
+    * @param attrType - any attribute that extends {@linkcode AbAttr}
+    * @returns Array of attributes that match `attrType`, Empty Array if none match.
+    */
+   getAttrs<T extends AbAttrString>(attrType: T): AbAttrMap[T][] {
+-    const targetAttr = AbilityAttrs[attrType];
+-    if (!targetAttr) {
+-      return [];
++    if (this.attrCacheSize !== this.attrs.length) {
++      this.attrCache.clear();
++      this.attrCacheSize = this.attrs.length;
++    }
++    let cached = this.attrCache.get(attrType);
++    if (cached === undefined) {
++      const targetAttr = AbilityAttrs[attrType];
++      cached = targetAttr ? this.attrs.filter(a => a instanceof targetAttr) : [];
++      this.attrCache.set(attrType, cached);
+     }
+     // TODO: figure out how to remove the `as AbAttrMap[T][]` cast
+-    return this.attrs.filter((a): a is AbAttrMap[T] => a instanceof targetAttr) as AbAttrMap[T][];
++    return cached as AbAttrMap[T][];
+   }
+ }
+ 

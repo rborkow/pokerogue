@@ -11,6 +11,7 @@ import { DynamicQueueManager } from "#app/dynamic-queue-manager";
 import { globalScene } from "#app/global-scene";
 import type { Phase } from "#app/phase";
 import { PhaseTree } from "#app/phase-tree";
+import { battleProfiler, PROFILING_SUPPORTED } from "#app/profiling/battle-profiler";
 import { PHASE_START_COLOR } from "#constants/colors";
 import { MovePhaseTimingModifier } from "#enums/move-phase-timing-modifier";
 import type { Pokemon } from "#field/pokemon";
@@ -344,6 +345,9 @@ export class PhaseManager {
    * This is called by {@linkcode Phase.end} by default, and should not be called by other methods.
    */
   public shiftPhase(): void {
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.onPhaseEnd(this.currentPhase);
+    }
     if (this.standbyPhase) {
       this.currentPhase = this.standbyPhase;
       this.standbyPhase = null;
@@ -362,6 +366,9 @@ export class PhaseManager {
       this.currentPhase = nextPhase;
     }
 
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.onPhaseSelected(this.currentPhase);
+    }
     this.startCurrentPhase();
   }
 
@@ -391,6 +398,9 @@ export class PhaseManager {
 
     this.standbyPhase = this.currentPhase;
     this.currentPhase = phase;
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.onPhaseSelected(phase);
+    }
     this.startCurrentPhase();
 
     return true;
@@ -446,6 +456,9 @@ export class PhaseManager {
     defer?: boolean | null,
   ) {
     const phase = new MessagePhase(message, callbackDelay, prompt, promptDelay);
+    if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+      battleProfiler.countMessage();
+    }
     if (defer) {
       this.pushPhase(phase);
     } else {

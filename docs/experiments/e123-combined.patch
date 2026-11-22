@@ -1,0 +1,79 @@
+diff --git a/src/phase-manager.ts b/src/phase-manager.ts
+index dff2ad2..98c73d2 100644
+--- a/src/phase-manager.ts
++++ b/src/phase-manager.ts
+@@ -276,6 +276,11 @@ export class PhaseManager {
+     return this.currentPhase;
+   }
+ 
++  /** EXPERIMENT E3: name of the phase that would run next (static queue only). */
++  public peekNextPhaseName(): string | undefined {
++    return this.phaseQueue.peekNextPhase()?.phaseName;
++  }
++
+   getStandbyPhase(): Phase | null {
+     return this.standbyPhase;
+   }
+diff --git a/src/phase-tree.ts b/src/phase-tree.ts
+index 4f9aa06..2ca906e 100644
+--- a/src/phase-tree.ts
++++ b/src/phase-tree.ts
+@@ -103,6 +103,16 @@ export class PhaseTree {
+    * Remove and return the first {@linkcode Phase} from the topmost level of the tree.
+    * @returns The next {@linkcode Phase}, or `undefined` if the Tree is empty
+    */
++  /** EXPERIMENT E3: the phase that would run next, without removing it. */
++  public peekNextPhase(): Phase | undefined {
++    for (let level = this.levels.length - 1; level >= 0; level--) {
++      if (this.levels[level].length > 0) {
++        return this.levels[level][0];
++      }
++    }
++    return;
++  }
++
+   public getNextPhase(): Phase | undefined {
+     // Clear out all empty levels from the tree
+     this.currentLevel = this.levels.length - 1;
+diff --git a/src/phases/message-phase.ts b/src/phases/message-phase.ts
+index d927551..dcfc427 100644
+--- a/src/phases/message-phase.ts
++++ b/src/phases/message-phase.ts
+@@ -76,11 +76,15 @@ export class MessagePhase extends Phase {
+         this.promptDelay ?? 0,
+       );
+     } else {
++      // EXPERIMENT E3: a message immediately followed by another message is replaced at once,
++      // so give it a short hold; the last message of a run keeps the full hold.
++      const followedByMessage = globalScene.phaseManager.peekNextPhaseName() === "MessagePhase";
++      // EXPERIMENT E1 (combined): faster typing and shorter holds
+       globalScene.ui.showText(
+         this.text,
+-        null,
++        10,
+         () => this.end(),
+-        this.callbackDelay || (this.prompt ? 0 : 1500),
++        this.callbackDelay || (this.prompt ? 0 : followedByMessage ? 250 : 500),
+         this.prompt,
+         this.promptDelay,
+       );
+diff --git a/src/phases/show-ability-phase.ts b/src/phases/show-ability-phase.ts
+index 31a0ee7..af541ed 100644
+--- a/src/phases/show-ability-phase.ts
++++ b/src/phases/show-ability-phase.ts
+@@ -49,10 +49,10 @@ export class ShowAbilityPhase extends PokemonPhase {
+       globalScene.currentBattle.lastEnemyInvolved = pokemon.getBattlerIndex() % 2;
+     }
+ 
+-    globalScene.abilityBar.showAbility(this.pokemonName, this.abilityName, this.passive, this.player).then(() => {
+-      pokemon.revealAbility();
+-
+-      this.end();
+-    });
++    // EXPERIMENT E2: start the fly-in but do not block the battle on its tween/hold;
++    // the bar stays visible while the ability's message displays and HideAbilityPhase hides it.
++    void globalScene.abilityBar.showAbility(this.pokemonName, this.abilityName, this.passive, this.player);
++    pokemon.revealAbility();
++    this.end();
+   }
+ }

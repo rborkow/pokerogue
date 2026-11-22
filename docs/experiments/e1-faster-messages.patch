@@ -1,0 +1,19 @@
+diff --git a/src/phases/message-phase.ts b/src/phases/message-phase.ts
+index d927551..4d572eb 100644
+--- a/src/phases/message-phase.ts
++++ b/src/phases/message-phase.ts
+@@ -76,11 +76,12 @@ export class MessagePhase extends Phase {
+         this.promptDelay ?? 0,
+       );
+     } else {
++      // EXPERIMENT E1: shorter default hold and faster typing (both still scaled by game speed)
+       globalScene.ui.showText(
+         this.text,
+-        null,
++        10,
+         () => this.end(),
+-        this.callbackDelay || (this.prompt ? 0 : 1500),
++        this.callbackDelay || (this.prompt ? 0 : 500),
+         this.prompt,
+         this.promptDelay,
+       );

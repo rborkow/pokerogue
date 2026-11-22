@@ -12,6 +12,7 @@ import { settings } from "#app/global-settings-manager";
 import { speciesDataRegistry } from "#app/global-species-data-registry";
 import { getPokemonNameWithAffix } from "#app/messages";
 import { activeOverrides } from "#app/overrides";
+import { battleProfiler, PROFILING_SUPPORTED } from "#app/profiling/battle-profiler";
 import type { AnySound } from "#audio/audio-manager";
 import { speciesEggMoves } from "#balance/egg-moves";
 import {
@@ -3739,11 +3740,31 @@ export abstract class Pokemon extends Phaser.GameObjects.Container {
 
   /**
    * Calculates the damage of an attack made by another Pokemon against this Pokemon
-   * @param __namedParameters.source - Needed for proper typedoc rendering
+   * @param params - The {@linkcode GetAttackDamageParams} for the calculation
    * @returns The {@linkcode DamageCalculationResult}
    */
+  getAttackDamage(params: GetAttackDamageParams): DamageCalculationResult {
+    if (!(PROFILING_SUPPORTED && battleProfiler.enabled)) {
+      return this.computeAttackDamage(params);
+    }
+    const profStat = battleProfiler.stat("damage", "getAttackDamage");
+    if (params.simulated ?? true) {
+      profStat.a++;
+    }
+    battleProfiler.begin(profStat);
+    try {
+      return this.computeAttackDamage(params);
+    } finally {
+      battleProfiler.end();
+    }
+  }
+
+  /**
+   * Implementation of {@linkcode getAttackDamage}, separated so the opt-in profiler can time it.
+   * @param __namedParameters.source - Needed for proper typedoc rendering
+   */
   // TODO: Condense various multipliers into a separate function for easier unit testing
-  getAttackDamage({
+  private computeAttackDamage({
     source,
     move,
     ignoreAbility = false,

@@ -1,4 +1,6 @@
+import type { Ability } from "#abilities/ability";
 import { globalScene } from "#app/global-scene";
+import { battleProfiler, PROFILING_SUPPORTED, type ProfileStat } from "#app/profiling/battle-profiler";
 import type {
   AbAttrBaseParams,
   AbAttrMap,
@@ -32,6 +34,48 @@ function applySingleAbAttrs<T extends AbAttrString>(
   const ability = passive ? pokemon.getPassiveAbility() : pokemon.getAbility();
   const attrs = ability.getAttrs(attrType);
 
+  // Profiling (no-op unless explicitly enabled; stripped from production builds)
+  let profStat: ProfileStat | undefined;
+  if (PROFILING_SUPPORTED && battleProfiler.enabled) {
+    const stat = battleProfiler.abilityStat(ability, passive);
+    if (simulated) {
+      stat.c++;
+    }
+    if (attrs.length === 0) {
+      // Nothing to evaluate: count without timing to keep overhead low (the time stays in the caller's exclusive time).
+      stat.count++;
+      const secondary = battleProfiler.stat("abilityAttr", attrType);
+      secondary.count++;
+      secondary.c += simulated ? 1 : 0;
+      return;
+    }
+    profStat = stat;
+    profStat.a += attrs.length;
+    battleProfiler.begin(profStat);
+  }
+  try {
+    applySingleAbAttrsLoop(attrType, params, attrs, ability, attrFilter, messages, profStat);
+  } finally {
+    if (profStat !== undefined) {
+      const secondary = battleProfiler.stat("abilityAttr", attrType);
+      secondary.a += attrs.length;
+      secondary.c += simulated ? 1 : 0;
+      battleProfiler.end(secondary);
+    }
+  }
+}
+
+/** Inner loop of {@linkcode applySingleAbAttrs}, split out so the profiler can time it without restructuring. */
+function applySingleAbAttrsLoop<T extends AbAttrString>(
+  attrType: T,
+  params: AbAttrParamMap[T],
+  attrs: readonly AbAttrMap[T][],
+  ability: Ability,
+  attrFilter: AbAttrPredicate<T>,
+  messages: string[] | undefined,
+  profStat: ProfileStat | undefined,
+) {
+  const { simulated = false, passive = false, pokemon } = params;
   for (const attr of attrs) {
     if (!attrFilter(attr)) {
       continue;
@@ -65,6 +109,10 @@ function applySingleAbAttrs<T extends AbAttrString>(
 
     // The `as any` cast here uses the same reasoning as above.
     attr.apply(params as any);
+    if (profStat !== undefined) {
+      profStat.b++;
+      battleProfiler.stat("abilityAttr", attrType).b++;
+    }
 
     if (abShown) {
       globalScene.phaseManager.queueAbilityDisplay(pokemon, passive, false);
