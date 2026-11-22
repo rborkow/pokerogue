@@ -258,12 +258,23 @@ async function playTurnsInPage({ turns, label }) {
   const pm = globalScene.phaseManager;
   const now = () => pm.getCurrentPhase()?.phaseName;
 
+  // Phase/UI-mode timeline (one entry per change) to diagnose stalls.
+  const timeline = [];
+  const t0 = performance.now();
+  const note = () => {
+    const entry = `${now()}/${UiMode[globalScene.ui.mode] ?? globalScene.ui.mode}`;
+    if (timeline.at(-1)?.state !== entry) {
+      timeline.push({ t: Math.round(performance.now() - t0), state: entry });
+    }
+  };
   for (let i = 0; i < 2400 && !(now() === "CommandPhase" && globalScene.ui.mode === UiMode.COMMAND); i++) {
+    note();
     await sleep(50);
   }
   api.start({ traceDetail: "phases" });
   const deadline = performance.now() + 240_000 * turns;
   while (battleProfiler.turns.length < turns && performance.now() < deadline) {
+    note();
     const name = now();
     const mode = globalScene.ui.mode;
     if (name === "CommandPhase" && mode === UiMode.COMMAND) {
@@ -283,6 +294,7 @@ async function playTurnsInPage({ turns, label }) {
     summary: api.summary(meta),
     trace: api.trace(meta),
     report: api.report(meta),
+    timeline,
   };
 }
 
@@ -327,6 +339,10 @@ async function main() {
         writeFileSync(`${base}.summary.json`, JSON.stringify(out.summary, null, 2));
         writeFileSync(`${base}.trace.json`, JSON.stringify(out.trace));
         writeFileSync(`${base}.report.txt`, out.report);
+        writeFileSync(`${base}.timeline.json`, JSON.stringify(out.timeline, null, 1));
+        if (out.summary.turns.length === 0) {
+          console.warn(`[${label}] no turns completed; last states: ${JSON.stringify(out.timeline.slice(-5))}`);
+        }
         const walls = out.summary.turns.map(t => t.breakdown.wallMs.toFixed(0)).join(", ");
         console.info(
           `${label}: ${out.summary.turns.length} turns, wall ms [${walls}] (${((Date.now() - t0) / 1000).toFixed(0)} s)`,
