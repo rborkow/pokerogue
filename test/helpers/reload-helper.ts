@@ -41,16 +41,11 @@ export class ReloadHelper extends GameManagerHelper {
     scene.phaseManager.unshiftPhase(titlePhase);
     this.game.endPhase(); // End the currently ongoing battle
 
-    // remove all persistent mods before loading
-    // TODO: Look into why these aren't removed before load
-    if (this.game.scene.modifiers.length > 0) {
-      console.log(
-        "Removing %d modifiers from scene on load...",
-        this.game.scene.modifiers.length,
-        this.game.scene.modifiers,
-      );
-      this.game.scene.modifiers = [];
-    }
+    // In the real game, the title screen is only reached after `BattleScene.reset()`, which clears
+    // both modifier lists. This helper skips that reset, so clear them here; otherwise loaded
+    // modifiers (including enemy held items) would stack onto the stale ones.
+    this.game.scene.modifiers = [];
+    this.game.scene.clearEnemyModifiers();
     await titlePhase["loadSaveSlot"](0); // Load the desired session data
 
     await this.game.phaseInterceptor.to("CommandPhase");

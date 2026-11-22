@@ -1260,12 +1260,30 @@ export class BattleScene extends SceneBase {
     return Math.max(doubleChance.value, 1);
   }
 
-  isNewBiome(currentBattle = this.currentBattle) {
+  isNewBiome(currentBattle: Pick<Battle, "waveIndex"> = this.currentBattle) {
     const isWaveIndexMultipleOfTen = !(currentBattle.waveIndex % 10);
     const isEndlessOrDaily = this.gameMode.hasShortBiomes || this.gameMode.isDaily;
     const isEndlessFifthWave = this.gameMode.hasShortBiomes && currentBattle.waveIndex % 5 === 0;
     const isWaveIndexMultipleOfFiftyMinusOne = currentBattle.waveIndex % 50 === 49;
     return isWaveIndexMultipleOfTen || isEndlessFifthWave || (isEndlessOrDaily && isWaveIndexMultipleOfFiftyMinusOne);
+  }
+
+  /**
+   * Determine whether the arena state is reset when starting the given battle.
+   * When it is, the player's Pokemon are recalled after the previous battle and sent out again
+   * (re-triggering their on-summon effects); otherwise, they stay on the field.
+   * @param battle - The battle being started; default `this.currentBattle`
+   * @returns Whether the arena state is reset at the start of `battle`.
+   * @remarks
+   * Shared by the live wave transition and session loading, so that loading a session re-applies
+   * player entry effects exactly when starting that wave live would have.
+   */
+  public isArenaResetBattle(battle: Battle = this.currentBattle): boolean {
+    return (
+      this.isNewBiome({ waveIndex: battle.waveIndex - 1 })
+      || [BattleType.TRAINER, BattleType.MYSTERY_ENCOUNTER].includes(battle.battleType)
+      || battle.isClassicFinalBoss
+    );
   }
 
   /**
@@ -1555,10 +1573,7 @@ export class BattleScene extends SceneBase {
   private doPostBattleCleanup(lastBattle: Battle, maxExpLevel: number): void {
     const isNewBiome = this.isNewBiome(lastBattle);
     /** Whether to reset and recall pokemon */
-    const resetArenaState =
-      isNewBiome
-      || [BattleType.TRAINER, BattleType.MYSTERY_ENCOUNTER].includes(this.currentBattle.battleType)
-      || this.currentBattle.isClassicFinalBoss;
+    const resetArenaState = this.isArenaResetBattle();
 
     for (const enemyPokemon of this.getEnemyParty()) {
       enemyPokemon.destroy();

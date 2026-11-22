@@ -284,11 +284,9 @@ export class SummonPhase extends PartyMemberPokemonPhase {
 
     pokemon.resetTurnData();
 
-    if (
-      !this.loaded
-      || [BattleType.TRAINER, BattleType.MYSTERY_ENCOUNTER].includes(globalScene.currentBattle.battleType)
-      || globalScene.currentBattle.waveIndex % 10 === 1
-    ) {
+    // When loading a session, only re-trigger on-summon effects if starting this wave live
+    // would have sent the Pokemon out (rather than carrying it over from the previous wave)
+    if (!this.loaded || globalScene.isArenaResetBattle()) {
       globalScene.triggerPokemonFormChange(pokemon, SpeciesFormChangeActiveTrigger, true);
       this.queuePostSummon();
     }
